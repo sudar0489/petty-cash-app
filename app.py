@@ -160,6 +160,25 @@ def append_row_to_sheet(row: dict):
     ws.append_row(values, value_input_option="USER_ENTERED")
 
 
+def delete_month_from_sheet(year: int, month: int):
+    """
+    Delete all rows in the Google Sheet that belong to the given year+month.
+    Keeps other months untouched.
+    """
+    df_all_latest = load_all_data_from_sheet()
+    if df_all_latest.empty:
+        return
+
+    dt_all = pd.to_datetime(df_all_latest["date"], errors="coerce")
+    mask_month = (dt_all.dt.year == year) & (dt_all.dt.month == month)
+
+    # Keep everything that is NOT this month
+    df_kept = df_all_latest[~mask_month].copy()
+
+    # Save back to Google Sheet
+    save_all_data_to_sheet(df_kept)
+
+
 # ---------- CASHBOOK LOGIC ----------
 
 def compute_cashbook(df: pd.DataFrame, opening_balance: float = 0.0):
@@ -301,6 +320,26 @@ c3.metric("Final Balance", f"{final_balance:,.0f}")
 c4.metric("Entries", len(df_raw))
 
 st.markdown("---")
+
+# Danger zone: reset this month only
+with st.expander("Danger zone: reset this month", expanded=False):
+    st.write(
+        f"This will **permanently delete** all entries for "
+        f"**{month_name} {year}** from Google Sheets. "
+        "Other months will not be touched."
+    )
+    confirm_reset = st.checkbox(
+        f"I understand, delete all entries for {month_name} {year}",
+        key="confirm_reset_month",
+    )
+    if st.button("Delete ALL entries for this month", type="primary"):
+        if not confirm_reset:
+            st.warning("Tick the confirmation checkbox first.")
+        else:
+            delete_month_from_sheet(year, month)
+            st.success(f"All entries for {month_name} {year} have been deleted.")
+            st.rerun()
+
 
 # ---------- QUICK DUPLICATE ----------
 st.subheader("Quick duplicate last entry (this month)")
