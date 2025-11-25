@@ -407,10 +407,10 @@ with st.form("add_entry"):
         custom_category = st.text_input("Custom category (optional)", key="custom_category")
         amount = st.number_input("Amount", min_value=0.0, step=50.0, key="amount_input")
         attachment_file = st.file_uploader(
-            "Bill / screenshot (optional)",
-            type=["png", "jpg", "jpeg", "pdf"],
-            key="attachment_uploader",
-        )
+    "Bill / screenshot (optional)",
+    type=None,  # allow all file types
+    key="attachment_uploader",
+)
 
     submitted = st.form_submit_button("Save transaction")
 
