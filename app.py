@@ -381,7 +381,7 @@ with st.form("add_entry"):
 
     with col1:
         tx_date_obj = st.date_input("Date", value=date.today(), key=f"date_calendar_{fid}")
-        mode = st.selectbox("Mode", ["Cash", "Bank", "UPI"], index=0, key=f"mode_select_{fid}")
+        mode = st.selectbox("Mode", ["UPI", "Cash", "Bank"], index=0, key=f"mode_select_{fid}")
         tx_type = st.radio("Type", ["Cash out", "Cash in"], index=0, horizontal=True, key=f"tx_type_{fid}")
 
     with col2:
