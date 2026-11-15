@@ -368,13 +368,21 @@ st.markdown("---")
 # ---------- ADD NEW TRANSACTION ----------
 st.subheader("Add new transaction")
 
+# Changing this id gives every form widget a new key, so the form comes back blank after saving
+if "form_id" not in st.session_state:
+    st.session_state["form_id"] = 0
+fid = st.session_state["form_id"]
+
+if st.session_state.pop("just_saved", False):
+    st.success("Transaction saved successfully!")
+
 with st.form("add_entry"):
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        tx_date_obj = st.date_input("Date", value=date.today(), key="date_calendar")
-        mode = st.selectbox("Mode", ["Cash", "Bank", "UPI"], index=0, key="mode_select")
-        tx_type = st.radio("Type", ["Cash out", "Cash in"], index=0, horizontal=True, key="tx_type")
+        tx_date_obj = st.date_input("Date", value=date.today(), key=f"date_calendar_{fid}")
+        mode = st.selectbox("Mode", ["Cash", "Bank", "UPI"], index=0, key=f"mode_select_{fid}")
+        tx_type = st.radio("Type", ["Cash out", "Cash in"], index=0, horizontal=True, key=f"tx_type_{fid}")
 
     with col2:
         if previous_remarks:
@@ -382,12 +390,12 @@ with st.form("add_entry"):
                 "Pick previous remark (optional)",
                 [""] + previous_remarks,
                 index=0,
-                key="remark_suggest",
+                key=f"remark_suggest_{fid}",
             )
         else:
             remark_suggestion = ""
 
-        remark = st.text_input("Remark", value=remark_suggestion or "", key="remark_input")
+        remark = st.text_input("Remark", value=remark_suggestion or "", key=f"remark_input_{fid}")
 
         extra_categories = [
             c for c in previous_categories
@@ -399,23 +407,23 @@ with st.form("add_entry"):
             "Category",
             category_options,
             index=category_options.index("Other"),
-            key="category_select",
+            key=f"category_select_{fid}",
         )
 
     with col3:
-        custom_category = st.text_input("Custom category (optional)", key="custom_category")
+        custom_category = st.text_input("Custom category (optional)", key=f"custom_category_{fid}")
         amount = st.number_input(
             "Amount",
             min_value=0.0,
             value=None,
             step=50.0,
             placeholder="Enter amount",
-            key="amount_input",
+            key=f"amount_input_{fid}",
         )
         attachment_file = st.file_uploader(
             "Bill / screenshot (optional)",
             type=None,
-            key="attachment_uploader",
+            key=f"attachment_uploader_{fid}",
         )
 
     submitted = st.form_submit_button("Save transaction")
@@ -456,16 +464,8 @@ with st.form("add_entry"):
             }
 
             append_row_to_sheet(row)
-            st.success("Transaction saved successfully!")
-
-            for key in [
-                "date_calendar", "remark_suggest", "remark_input",
-                "category_select", "custom_category", "mode_select",
-                "tx_type", "amount_input", "attachment_uploader",
-            ]:
-                if key in st.session_state:
-                    del st.session_state[key]
-
+            st.session_state["just_saved"] = True
+            st.session_state["form_id"] += 1
             st.rerun()
 
 st.markdown("---")
