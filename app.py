@@ -404,7 +404,14 @@ with st.form("add_entry"):
 
     with col3:
         custom_category = st.text_input("Custom category (optional)", key="custom_category")
-        amount = st.number_input("Amount", min_value=0.0, step=50.0, key="amount_input")
+        amount = st.number_input(
+            "Amount",
+            min_value=0.0,
+            value=None,
+            step=50.0,
+            placeholder="Enter amount",
+            key="amount_input",
+        )
         attachment_file = st.file_uploader(
             "Bill / screenshot (optional)",
             type=None,
@@ -414,7 +421,7 @@ with st.form("add_entry"):
     submitted = st.form_submit_button("Save transaction")
 
     if submitted:
-        if amount <= 0:
+        if amount is None or amount <= 0:
             st.error("Amount must be greater than zero.")
         else:
             cash_in = amount if tx_type == "Cash in" else 0.0
