@@ -1,5 +1,6 @@
 import os
 import io
+import html
 import zipfile
 import calendar
 from datetime import date, datetime
@@ -10,7 +11,7 @@ import gspread
 from google.oauth2 import service_account
 
 # ---------- GLOBAL CONFIG ----------
-APP_TITLE = "Petty Cash Manager"
+APP_TITLE = "Household Expense Manager"
 
 ATTACH_DIR = "attachments"
 os.makedirs(ATTACH_DIR, exist_ok=True)
@@ -20,7 +21,7 @@ COLUMNS = [
     "cash_in", "cash_out", "attachment_path"
 ]
 
-FOOD_KEYWORDS = ["breakfast", "lunch", "dinner", "food", "meal", "snacks"]
+FOOD_KEYWORDS = ["breakfast", "lunch", "dinner", "food", "meal", "snacks", "hotel", "swiggy", "zomato"]
 
 MONTH_NAMES = {
     1: "January", 2: "February", 3: "March",
@@ -30,24 +31,35 @@ MONTH_NAMES = {
 }
 
 BASE_CATEGORIES = [
-    "Office petty cash",
-    "Tea break",
-    "Labour Charges",
-    "Stationeries",
-    "Salary",
-    "Water can",
-    "Courier services",
-    "Food",
+    "Groceries",
+    "Vegetables & Fruits",
+    "Milk & Dairy",
+    "Food & Eating Out",
+    "Gas Cylinder",
+    "Electricity Bill",
+    "Water / Drinking Water",
+    "Mobile / Internet Recharge",
+    "Rent / Maintenance",
+    "House Help / Maid",
+    "Medical / Medicines",
+    "Transport / Petrol",
+    "Education / School Fees",
+    "Clothing & Shopping",
+    "Household Items / Repairs",
+    "Entertainment / Outings",
+    "Gifts / Functions",
+    "Savings / Investments",
+    "Income / Salary",
     "Other",
 ]
 
+# Old office categories: hidden from the dropdown even if old rows still exist in the sheet
+REMOVED_CATEGORIES = {
+    "Office petty cash", "Tea break", "Labour Charges", "Courier services",
+    "Stationeries", "Salary", "Water can", "Food",
+}
+
 # ---------- SMALL HELPERS ----------
-
-def get_previous_period(year: int, month: int):
-    if month == 1:
-        return year - 1, 12
-    return year, month - 1
-
 
 def filter_month_df(df: pd.DataFrame, year: int, month: int) -> pd.DataFrame:
     """Filter the full dataframe to only rows in the given year+month."""
@@ -72,9 +84,8 @@ def get_gspread_client():
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
-    creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
-    gc = gspread.authorize(creds)
-    return gc
+    creds = service_account.Credentials.from_service_account_info(dict(info), scopes=scopes)
+    return gspread.authorize(creds)
 
 
 def get_worksheet():
@@ -132,25 +143,25 @@ def load_all_data_from_sheet() -> pd.DataFrame:
     df["date"] = df["date"].astype(str)
     df.loc[df["date"].isin(["NaT", "nan", "None"]), "date"] = ""
 
-    df["cash_in"] = pd.to_numeric(df.get("cash_in", 0), errors="coerce").fillna(0.0)
-    df["cash_out"] = pd.to_numeric(df.get("cash_out", 0), errors="coerce").fillna(0.0)
+    df["cash_in"] = pd.to_numeric(df["cash_in"], errors="coerce").fillna(0.0)
+    df["cash_out"] = pd.to_numeric(df["cash_out"], errors="coerce").fillna(0.0)
 
-    df["remark"] = df["remark"].astype(str).fillna("")
-    df["category"] = df["category"].astype(str).fillna("Other")
-    df["mode"] = df["mode"].astype(str).fillna("Cash")
-    df["attachment_path"] = df["attachment_path"].astype(str).fillna("")
+    df["remark"] = df["remark"].fillna("").astype(str)
+    df["category"] = df["category"].fillna("Other").astype(str)
+    df["mode"] = df["mode"].fillna("Cash").astype(str)
+    df["attachment_path"] = df["attachment_path"].fillna("").astype(str)
 
     return df
 
 
 def save_all_data_to_sheet(df_all: pd.DataFrame):
-    """Overwrite entire 'data' worksheet with df_all (header + rows)."""
+    """Overwrite entire 'data' worksheet with df_all (header + rows) in one update."""
     ws = get_worksheet()
-    ws.clear()
-    ws.append_row(COLUMNS)
+    rows = []
     if not df_all.empty:
-        rows = df_all[COLUMNS].astype(str).values.tolist()
-        ws.append_rows(rows, value_input_option="USER_ENTERED")
+        rows = df_all[COLUMNS].fillna("").astype(str).values.tolist()
+    ws.clear()
+    ws.update(range_name="A1", values=[COLUMNS] + rows, value_input_option="USER_ENTERED")
 
 
 def append_row_to_sheet(row: dict):
@@ -161,22 +172,14 @@ def append_row_to_sheet(row: dict):
 
 
 def delete_month_from_sheet(year: int, month: int):
-    """
-    Delete all rows in the Google Sheet that belong to the given year+month.
-    Keeps other months untouched.
-    """
+    """Delete all rows belonging to the given year+month. Other months stay."""
     df_all_latest = load_all_data_from_sheet()
     if df_all_latest.empty:
         return
 
     dt_all = pd.to_datetime(df_all_latest["date"], errors="coerce")
     mask_month = (dt_all.dt.year == year) & (dt_all.dt.month == month)
-
-    # Keep everything that is NOT this month
-    df_kept = df_all_latest[~mask_month].copy()
-
-    # Save back to Google Sheet
-    save_all_data_to_sheet(df_kept)
+    save_all_data_to_sheet(df_all_latest[~mask_month].copy())
 
 
 # ---------- CASHBOOK LOGIC ----------
@@ -191,7 +194,8 @@ def compute_cashbook(df: pd.DataFrame, opening_balance: float = 0.0):
     df["cash_in"] = pd.to_numeric(df["cash_in"], errors="coerce").fillna(0.0)
     df["cash_out"] = pd.to_numeric(df["cash_out"], errors="coerce").fillna(0.0)
 
-    df = df.sort_values("date_ts")
+    # stable sort keeps same-day entries in the order they were entered
+    df = df.sort_values("date_ts", kind="stable")
 
     total_in = df["cash_in"].sum()
     total_out = df["cash_out"].sum()
@@ -227,10 +231,9 @@ def normalize_imported_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame(columns=COLUMNS)
 
     for col in raw_df.columns:
-        lc = col.strip().lower()
+        lc = str(col).strip().lower()
         if lc in col_map:
-            target = col_map[lc]
-            df[target] = raw_df[col]
+            df[col_map[lc]] = raw_df[col]
 
     for col in COLUMNS:
         if col not in df.columns:
@@ -242,10 +245,10 @@ def normalize_imported_dataframe(raw_df: pd.DataFrame) -> pd.DataFrame:
 
     df["cash_in"] = pd.to_numeric(df["cash_in"], errors="coerce").fillna(0.0)
     df["cash_out"] = pd.to_numeric(df["cash_out"], errors="coerce").fillna(0.0)
-    df["remark"] = df["remark"].astype(str).fillna("")
-    df["category"] = df["category"].astype(str).fillna("Other")
-    df["mode"] = df["mode"].astype(str).fillna("Cash")
-    df["attachment_path"] = df["attachment_path"].astype(str).fillna("")
+    df["remark"] = df["remark"].fillna("").astype(str)
+    df["category"] = df["category"].fillna("Other").astype(str)
+    df["mode"] = df["mode"].fillna("Cash").astype(str)
+    df["attachment_path"] = df["attachment_path"].fillna("").astype(str)
 
     return df
 
@@ -285,19 +288,15 @@ with st.sidebar:
 # ---------- LOAD ALL DATA FROM SHEET ----------
 df_all = load_all_data_from_sheet()
 
-# ---------- OPENING BALANCE ----------
-prev_year, prev_month = get_previous_period(year, month)
-df_prev_month = filter_month_df(df_all, prev_year, prev_month)
-prev_cb, _, _, prev_final_balance = compute_cashbook(df_prev_month, opening_balance=0.0)
-auto_opening = float(prev_final_balance)
-
+# ---------- OPENING BALANCE (manual only, no carry forward) ----------
 with st.sidebar:
     st.subheader("Opening balance")
     opening_balance = st.number_input(
-        "Carried forward",
-        value=auto_opening,
+        "Opening balance (manual, optional)",
+        value=0.0,
         step=100.0,
-        help=f"Auto from closing balance of {MONTH_NAMES[prev_month]} {prev_year}. You can edit.",
+        key=f"opening_{year}_{month}",
+        help="Nothing is carried forward from previous months. Leave at 0 if you don't need it.",
     )
 
 # ---------- CURRENT MONTH DATA ----------
@@ -349,11 +348,10 @@ else:
     if st.button("Duplicate last entry for today"):
         last = df_raw.copy()
         last["date_ts"] = pd.to_datetime(last["date"], errors="coerce")
-        last = last.sort_values("date_ts").iloc[-1]
+        last = last.sort_values("date_ts", kind="stable").iloc[-1]
 
-        tx_date = date.today().isoformat()
         new_row = {
-            "date": tx_date,
+            "date": date.today().isoformat(),
             "remark": last.get("remark", ""),
             "category": last.get("category", "Other"),
             "mode": last.get("mode", "Cash"),
@@ -376,7 +374,7 @@ with st.form("add_entry"):
     with col1:
         tx_date_obj = st.date_input("Date", value=date.today(), key="date_calendar")
         mode = st.selectbox("Mode", ["Cash", "Bank", "UPI"], index=0, key="mode_select")
-        tx_type = st.radio("Type", ["Cash in", "Cash out"], index=0, horizontal=True, key="tx_type")
+        tx_type = st.radio("Type", ["Cash out", "Cash in"], index=0, horizontal=True, key="tx_type")
 
     with col2:
         if previous_remarks:
@@ -389,17 +387,18 @@ with st.form("add_entry"):
         else:
             remark_suggestion = ""
 
-        default_remark = remark_suggestion or ""
-        remark = st.text_input("Remark", value=default_remark, key="remark_input")
+        remark = st.text_input("Remark", value=remark_suggestion or "", key="remark_input")
 
-        extra_categories = [c for c in previous_categories if c not in BASE_CATEGORIES]
+        extra_categories = [
+            c for c in previous_categories
+            if c not in BASE_CATEGORIES and c not in REMOVED_CATEGORIES
+        ]
         category_options = BASE_CATEGORIES + extra_categories
-        default_cat = "Other" if "Other" in category_options else category_options[0]
 
         category_select = st.selectbox(
             "Category",
             category_options,
-            index=category_options.index(default_cat),
+            index=category_options.index("Other"),
             key="category_select",
         )
 
@@ -407,10 +406,10 @@ with st.form("add_entry"):
         custom_category = st.text_input("Custom category (optional)", key="custom_category")
         amount = st.number_input("Amount", min_value=0.0, step=50.0, key="amount_input")
         attachment_file = st.file_uploader(
-    "Bill / screenshot (optional)",
-    type=None,  # allow all file types
-    key="attachment_uploader",
-)
+            "Bill / screenshot (optional)",
+            type=None,
+            key="attachment_uploader",
+        )
 
     submitted = st.form_submit_button("Save transaction")
 
@@ -424,16 +423,18 @@ with st.form("add_entry"):
             attachment_path = ""
             if attachment_file is not None:
                 ext = os.path.splitext(attachment_file.name)[1]
-                safe_name = f"{tx_date_obj.strftime('%Y%m%d')}_{remark.replace(' ', '_')}{ext}"
+                clean_remark = "".join(ch if ch.isalnum() else "_" for ch in remark)[:30]
+                stamp = datetime.now().strftime("%H%M%S")
+                safe_name = f"{tx_date_obj.strftime('%Y%m%d')}_{stamp}_{clean_remark}{ext}"
                 save_path = os.path.join(ATTACH_DIR, safe_name)
                 with open(save_path, "wb") as f:
                     f.write(attachment_file.getbuffer())
                 attachment_path = save_path
 
             final_category = category_select
-            remark_lower = remark.lower()
-            if any(word in remark_lower for word in FOOD_KEYWORDS):
-                final_category = "Food"
+            # auto-detect food only when the category was left at "Other"
+            if final_category == "Other" and any(w in remark.lower() for w in FOOD_KEYWORDS):
+                final_category = "Food & Eating Out"
             if custom_category.strip():
                 final_category = custom_category.strip()
 
@@ -463,23 +464,25 @@ with st.form("add_entry"):
 st.markdown("---")
 
 # ---------- EDIT TABLE ----------
-st.subheader("Edit transactions in table (this month only)")
+st.subheader("Edit / delete transactions in table (this month only)")
 if df_raw.empty:
     st.caption("No transactions to edit yet.")
 else:
     df_editable = df_raw.copy()
     dt = pd.to_datetime(df_editable["date"], errors="coerce")
     df_editable["date"] = dt.dt.date
+    df_editable["delete"] = False
 
     editable_cols = ["date", "remark", "category", "mode", "cash_in", "cash_out"]
 
     edited_df = st.data_editor(
-        df_editable[editable_cols],
+        df_editable[editable_cols + ["delete"]],
         num_rows="fixed",
         use_container_width=True,
         key=f"summary_editor_{year}_{month}",
         column_config={
             "date": st.column_config.DateColumn("date", format="YYYY-MM-DD"),
+            "delete": st.column_config.CheckboxColumn("Delete?"),
         },
     )
 
@@ -495,15 +498,18 @@ else:
             for col in editable_cols:
                 df_all_latest.loc[month_idx, col] = edited_df[col].values
 
+            delete_flags = edited_df["delete"].fillna(False).astype(bool).values
+            df_all_latest = df_all_latest.drop(index=month_idx[delete_flags])
+
             dt2 = pd.to_datetime(df_all_latest["date"], errors="coerce")
             df_all_latest["date"] = dt2.dt.date.astype(str)
             df_all_latest.loc[df_all_latest["date"] == "NaT", "date"] = ""
 
             df_all_latest["cash_in"] = pd.to_numeric(df_all_latest["cash_in"], errors="coerce").fillna(0.0)
             df_all_latest["cash_out"] = pd.to_numeric(df_all_latest["cash_out"], errors="coerce").fillna(0.0)
-            df_all_latest["remark"] = df_all_latest["remark"].astype(str).fillna("")
-            df_all_latest["category"] = df_all_latest["category"].astype(str).fillna("Other")
-            df_all_latest["mode"] = df_all_latest["mode"].astype(str).fillna("Cash")
+            df_all_latest["remark"] = df_all_latest["remark"].fillna("").astype(str)
+            df_all_latest["category"] = df_all_latest["category"].fillna("Other").astype(str)
+            df_all_latest["mode"] = df_all_latest["mode"].fillna("Cash").astype(str)
 
             save_all_data_to_sheet(df_all_latest)
             st.success("Table changes saved successfully!")
@@ -512,7 +518,7 @@ else:
 st.markdown("---")
 
 # ---------- IMPORT ----------
-st.subheader("Import data into this month (Google Sheets backend)")
+st.subheader("Import data (Google Sheets backend)")
 import_file = st.file_uploader(
     "Upload CSV or Excel (.xlsx)",
     type=["csv", "xlsx"],
@@ -535,8 +541,10 @@ if st.button("Import file now"):
                 raw_import_df = pd.read_excel(import_file)
 
             norm_df = normalize_imported_dataframe(raw_import_df)
+            # drop rows without a valid date, they would be invisible in every month
+            norm_df = norm_df[norm_df["date"] != ""]
 
-            if norm_df["date"].isna().all():
+            if norm_df.empty:
                 st.error("No valid dates found in imported file. Please check the Date column.")
             else:
                 df_all_latest = load_all_data_from_sheet()
@@ -545,12 +553,10 @@ if st.button("Import file now"):
 
                 if replace_existing:
                     df_all_latest = df_all_latest[~mask_month]
-                    df_all_new = pd.concat([df_all_latest, norm_df], ignore_index=True)
-                else:
-                    df_all_new = pd.concat([df_all_latest, norm_df], ignore_index=True)
 
+                df_all_new = pd.concat([df_all_latest, norm_df], ignore_index=True)
                 save_all_data_to_sheet(df_all_new)
-                st.success(f"Imported {len(norm_df)} rows into {month_name} {year}.")
+                st.success(f"Imported {len(norm_df)} rows.")
                 st.rerun()
         except Exception as e:
             st.error(f"Import failed: {e}")
@@ -576,19 +582,23 @@ else:
 
     fcol1, fcol2, fcol3 = st.columns(3)
     with fcol1:
-        filter_from = st.date_input("From date", value=start_of_month, key="filter_from")
+        filter_from = st.date_input("From date", value=start_of_month, key=f"filter_from_{year}_{month}")
     with fcol2:
-        filter_to = st.date_input("To date", value=end_of_month, key="filter_to")
+        filter_to = st.date_input("To date", value=end_of_month, key=f"filter_to_{year}_{month}")
     with fcol3:
         remark_filter = st.text_input("Search in remark", key="filter_remark")
 
     fcol4, fcol5 = st.columns(2)
     with fcol4:
         cat_options = sorted(cashbook_df["category"].astype(str).unique())
-        cat_selected = st.multiselect("Category filter", cat_options, default=cat_options, key="filter_category")
+        cat_selected = st.multiselect(
+            "Category filter", cat_options, default=cat_options, key=f"filter_category_{year}_{month}"
+        )
     with fcol5:
         mode_options = sorted(cashbook_df["mode"].astype(str).unique())
-        mode_selected = st.multiselect("Mode filter", mode_options, default=mode_options, key="filter_mode")
+        mode_selected = st.multiselect(
+            "Mode filter", mode_options, default=mode_options, key=f"filter_mode_{year}_{month}"
+        )
 
     filtered_df = cashbook_df.copy()
     filtered_df["date_ts"] = pd.to_datetime(filtered_df["date"], errors="coerce")
@@ -649,28 +659,12 @@ if not df_raw.empty:
         <meta charset="UTF-8">
         <title>{APP_TITLE} - {month_name} {year}</title>
         <style>
-            body {{
-                font-family: Arial, sans-serif;
-                font-size: 12px;
-            }}
-            h2, h3 {{
-                text-align: center;
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-            }}
-            th, td {{
-                border: 1px solid #000;
-                padding: 4px;
-                text-align: center;
-            }}
-            th {{
-                background-color: #f0f0f0;
-            }}
-            .summary-table {{
-                margin-bottom: 16px;
-            }}
+            body {{ font-family: Arial, sans-serif; font-size: 12px; }}
+            h2, h3 {{ text-align: center; }}
+            table {{ width: 100%; border-collapse: collapse; }}
+            th, td {{ border: 1px solid #000; padding: 4px; text-align: center; }}
+            th {{ background-color: #f0f0f0; }}
+            .summary-table {{ margin-bottom: 16px; }}
         </style>
     </head>
     <body>
@@ -679,12 +673,14 @@ if not df_raw.empty:
         <p><strong>Duration:</strong> {start_of_month.strftime('%d %b %Y')} - {end_of_month.strftime('%d %b %Y')}</p>
         <table class="summary-table">
             <tr>
+                <th>Opening Balance</th>
                 <th>Total Cash in</th>
                 <th>Total Cash out</th>
                 <th>Final Balance</th>
                 <th>No. of entries</th>
             </tr>
             <tr>
+                <td>{opening_balance:,.0f}</td>
                 <td>{total_in:,.0f}</td>
                 <td>{total_out:,.0f}</td>
                 <td>{final_balance:,.0f}</td>
@@ -703,16 +699,16 @@ if not df_raw.empty:
             </tr>
     """
 
-    for _, row in cashbook_df.sort_values("date_ts").iterrows():
+    for _, row in cashbook_df.iterrows():
         report_html += f"""
             <tr>
-                <td>{row['Date']}</td>
-                <td>{row['remark']}</td>
-                <td>{row['category']}</td>
-                <td>{row['mode']}</td>
-                <td>{row['cash_in']}</td>
-                <td>{row['cash_out']}</td>
-                <td>{row['Balance']}</td>
+                <td>{html.escape(str(row['Date']))}</td>
+                <td>{html.escape(str(row['remark']))}</td>
+                <td>{html.escape(str(row['category']))}</td>
+                <td>{html.escape(str(row['mode']))}</td>
+                <td>{row['cash_in']:,.0f}</td>
+                <td>{row['cash_out']:,.0f}</td>
+                <td>{row['Balance']:,.0f}</td>
             </tr>
         """
 
@@ -722,12 +718,11 @@ if not df_raw.empty:
     </html>
     """
 
-    report_bytes = report_html.encode("utf-8")
     st.info("To create a PDF: open the HTML file in your browser → Print → Save as PDF.")
     st.download_button(
         label="Download print-friendly report (HTML)",
-        data=report_bytes,
-        file_name=f"cash_report_{year}_{month:02d}.html",
+        data=report_html.encode("utf-8"),
+        file_name=f"expense_report_{year}_{month:02d}.html",
         mime="text/html",
     )
 
@@ -742,7 +737,6 @@ if not df_raw.empty:
         sheet_name = f"{month_name[:3]}-{str(year)[-2:]}"
         df_to_write.to_excel(writer, sheet_name=sheet_name, index=False)
 
-        workbook = writer.book
         worksheet = writer.sheets[sheet_name]
 
         filename_col_idx = df_to_write.columns.get_loc("attachment_filename")
@@ -755,42 +749,33 @@ if not df_raw.empty:
         image_col_idx = filename_col_idx + 1
         worksheet.write(0, image_col_idx, "Embedded image")
 
-        thumb_row_height = 80
-        thumb_scale = 0.2
-
-        for row_num, (path, filename) in enumerate(
-            zip(export_df["attachment_path"], export_df["attachment_filename"]),
-            start=1,
-        ):
+        for row_num, path in enumerate(export_df["attachment_path"], start=1):
             if isinstance(path, str) and path.strip():
                 ext = os.path.splitext(path)[1].lower()
                 if ext in image_extensions and os.path.exists(path):
-                    worksheet.set_row(row_num, thumb_row_height)
+                    worksheet.set_row(row_num, 80)
                     worksheet.insert_image(
-                        row_num,
-                        image_col_idx,
-                        path,
-                        {"x_scale": thumb_scale, "y_scale": thumb_scale},
+                        row_num, image_col_idx, path,
+                        {"x_scale": 0.2, "y_scale": 0.2},
                     )
 
     excel_buffer.seek(0)
     st.download_button(
         label="Download this month as Excel (.xlsx)",
         data=excel_buffer,
-        file_name=f"cash_{year}_{month:02d}_petty_cash.xlsx",
+        file_name=f"expenses_{year}_{month:02d}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    csv_bytes = df_raw.to_csv(index=False).encode("utf-8")
     st.download_button(
         label="Download this month as CSV",
-        data=csv_bytes,
-        file_name=f"cash_{year}_{month:02d}_petty_cash.csv",
+        data=df_raw.to_csv(index=False).encode("utf-8"),
+        file_name=f"expenses_{year}_{month:02d}.csv",
         mime="text/csv",
     )
 
     month_attachment_paths = [
-        p for p in df_raw.get("attachment_path", []).tolist()
+        p for p in df_raw["attachment_path"].tolist()
         if isinstance(p, str) and p.strip() and os.path.exists(p)
     ]
     if month_attachment_paths:
@@ -811,7 +796,7 @@ st.markdown("---")
 # ---------- SMS / WHATSAPP SUMMARY ----------
 st.subheader("SMS / WhatsApp monthly summary")
 summary_text = (
-    f"Petty Cash Summary - {month_name} {year}\n"
+    f"Household Expense Summary - {month_name} {year}\n"
     f"Opening balance: {opening_balance:,.0f}\n"
     f"Total cash in: {total_in:,.0f}\n"
     f"Total cash out: {total_out:,.0f}\n"
@@ -819,4 +804,3 @@ summary_text = (
     f"Entries: {len(df_raw)}"
 )
 st.text_area("Copy & paste this text:", value=summary_text, height=120)
-
